@@ -7,7 +7,7 @@ name = "runbox-mail-mcp"
 version = "1.0.0"
 description = "Two-account Runbox MCP behind mcp-front"
 requires-python = ">=3.12"
-dependencies = ["mcp==1.26.0"]
+dependencies = ["mcp==2.3.0"]
 
 [project.scripts]
 runbox-mail-mcp = "mail_gateway:main"

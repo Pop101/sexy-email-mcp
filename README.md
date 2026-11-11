@@ -14,6 +14,7 @@ The running transport is Streamable HTTP on `127.0.0.1:3110/mcp`. Put it behind 
 - Outgoing base64 attachments on new drafts and replies, up to 10 files and 2 MB combined.
 - Private templates with simple `{variable}` placeholders.
 - Private signatures inserted at `{signature}`, or appended when the slot or template is absent.
+- Standard MCP `subscriptions/listen` streams for mailbox change notifications.
 - Short-lived in-memory drafts that require explicit approval before sending.
 
 ## Setup
@@ -92,6 +93,38 @@ Pass outgoing attachments to `prepare_email` or `prepare_reply`:
 ```
 
 The server validates filenames, MIME types, base64 data, individual sizes, and total size before creating a draft. Arbitrary server-side file paths are not accepted.
+
+## Mailbox subscriptions
+
+Agents can subscribe to `mail://inbox/{account}` using the standard [MCP subscription pattern](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions). Replace `{account}` with a configured account label returned by `list_accounts`.
+
+Open `subscriptions/listen` with a resource filter:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "subscriptions/listen",
+  "params": {
+    "notifications": {
+      "resourceSubscriptions": ["mail://inbox/primary"]
+    }
+  }
+}
+```
+
+The server first sends `notifications/subscriptions/acknowledged` with the accepted filter and subscription ID. Later mailbox UID changes produce `notifications/resources/updated` for the corresponding inbox URI. The notification is a level trigger: read `mail://inbox/{account}` or call `check_mail` to retrieve the current summary.
+
+The first poll establishes a baseline and does not announce old messages. Polling runs every 60 seconds while at least one subscription listener is active and stops when no listeners remain. Set `MAIL_POLL_SECONDS` to adjust the interval; values below five seconds are clamped to five.
+
+Close the SSE response stream to cancel an HTTP subscription. Streams and polling state are not persisted across reconnects or service restarts. Reopen `subscriptions/listen`, establish a new baseline, and refetch current state after reconnecting. There is no replay queue.
+
+Live acknowledgment checks are available without reading message bodies or sending mail:
+
+```bash
+.venv/bin/python deploy/subscription_smoke.py
+MAIL_PUBLIC_TOKEN=<oauth-access-token> .venv/bin/python deploy/subscription_smoke.py --public https://mcp.example.com/mail
+```
 
 ## Main tools
 

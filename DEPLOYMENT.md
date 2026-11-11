@@ -11,6 +11,7 @@ The application runs as a systemd service and exposes Streamable HTTP on `127.0.
 | Signatures | `.secrets/signatures.json` (0600, ignored) |
 | Backend token | `MAIL_MCP_TOKEN` in the service environment |
 | Public origin | `MAIL_PUBLIC_ORIGIN` when the gateway forwards the public Host or Origin |
+| Subscription polling | `MAIL_POLL_SECONDS` (default 60, minimum 5) |
 | Deployment files | `deploy/mail-mcp.service`, `deploy/mail-mcp.conf` |
 
 Never commit `.env`, `.secrets/`, account records, private templates, private signatures, gateway tokens, or local backup files.
@@ -21,9 +22,10 @@ Never commit `.env`, `.secrets/`, account records, private templates, private si
 .venv/bin/python -m unittest discover -s tests -v
 sudo systemctl restart mail-mcp
 .venv/bin/python deploy/smoke_test.py
+.venv/bin/python deploy/subscription_smoke.py
 ```
 
-The smoke test checks backend health, authentication, tool discovery, account status, prompts, and resources without reading or sending mail. Set `MAIL_PUBLIC_URL` to the full public connector URL to include OAuth and public-route checks.
+The smoke test checks backend health, authentication, tool discovery, account status, prompts, and resources without reading or sending mail. Set `MAIL_PUBLIC_URL` to the full public connector URL to include OAuth and public-route checks. The subscription probe opens a modern `subscriptions/listen` stream and verifies its acknowledgment and resource filter. Set `MAIL_PUBLIC_TOKEN` and pass `--public` with the full connector URL to test through the gateway as well.
 
 To recover a failed application update, restore the previous committed `mail_gateway.py` and restart the service. Routine application updates do not require rebuilding the gateway.
 

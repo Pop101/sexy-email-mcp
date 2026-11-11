@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
+from mcp.client import Client
 import mail_gateway as server
 
 ROWS = {
@@ -265,14 +266,41 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await pending
 
+    async def test_mailbox_polling_publishes_only_new_changes_after_baseline(self):
+        events = []
+        unsubscribe = server.SUBSCRIPTIONS.subscribe(events.append)
+        self.addCleanup(unsubscribe)
+        latest = {}
+        with patch.object(server, "_config", return_value=ROWS), \
+             patch.object(server, "_latest_uid", side_effect=["100", "200", "100", "201", "100", "201"]):
+            await server._poll_mailboxes(latest)
+            self.assertEqual(events, [])
+            await server._poll_mailboxes(latest)
+            await server._poll_mailboxes(latest)
+        self.assertEqual([event.uri for event in events], ["mail://inbox/secondary"])
+        self.assertTrue(server.SUBSCRIPTIONS.has_listeners)
+        unsubscribe()
+        self.assertFalse(server.SUBSCRIPTIONS.has_listeners)
+
+    async def test_subscription_stream_acknowledges_and_delivers_resource_update(self):
+        uri = "mail://inbox/primary"
+        with patch.object(server, "_config", return_value=ROWS), \
+             patch.object(server, "_latest_uid", return_value="100"):
+            async with Client(server.mcp, mode="2026-07-28") as client:
+                async with client.listen(resource_subscriptions=[uri]) as subscription:
+                    self.assertEqual(subscription.honored.resource_subscriptions, [uri])
+                    await server.SUBSCRIPTIONS.publish(server.ResourceUpdated(uri))
+                    event = await asyncio.wait_for(anext(subscription), timeout=1)
+                    self.assertEqual(event.uri, uri)
+
     async def test_public_surface_and_proactive_artifacts(self):
         tools = {tool.name: tool for tool in await server.mcp.list_tools()}
         self.assertEqual(set(tools), {"list_accounts", "list_templates", "list_signatures", "check_mail", "list_folders",
                                       "search_messages", "list_messages", "read_message", "get_attachment",
                                       "prepare_email", "prepare_reply", "send_draft"})
-        self.assertFalse(tools["send_draft"].annotations.readOnlyHint)
-        self.assertTrue(tools["list_messages"].annotations.readOnlyHint)
-        self.assertEqual(tools["send_draft"].inputSchema["properties"]["approved"]["type"], "boolean")
+        self.assertFalse(tools["send_draft"].annotations.read_only_hint)
+        self.assertTrue(tools["list_messages"].annotations.read_only_hint)
+        self.assertEqual(tools["send_draft"].input_schema["properties"]["approved"]["type"], "boolean")
         self.assertEqual([prompt.name for prompt in await server.mcp.list_prompts()], ["inbox_brief"])
         self.assertEqual([str(resource.uri) for resource in await server.mcp.list_resources()], ["mail://status"])
 
