@@ -8,3 +8,7 @@ build/
 dist/
 uv.lock
 .local/
+.venv/
+.secrets/
+.deployment-backups/
+*.log

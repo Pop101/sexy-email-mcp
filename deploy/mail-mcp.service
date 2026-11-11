@@ -1,0 +1,39 @@
+[Unit]
+Description=Runbox Mail MCP behind mcp-front
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=leonl
+Group=leonl
+WorkingDirectory=/home/leonl/hosted_projects/mcp/mail
+EnvironmentFile=/home/leonl/hosted_projects/mcp/mail/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/leonl/hosted_projects/mcp/mail/.venv/bin/python /home/leonl/hosted_projects/mcp/mail/mail_gateway.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/leonl/hosted_projects/mcp/mail
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=512M
+TasksMax=64
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
