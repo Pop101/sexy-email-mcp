@@ -143,7 +143,7 @@ Set `MAIL_ENABLE_SEND=false` and restart the service to remove `send_draft` from
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The test suite uses synthetic messages and fake credentials. It does not access a mailbox or send email. Deployment and service notes are in [DEPLOYMENT.md](DEPLOYMENT.md).
+The focused suite covers account routing, sender authority, templates, and signatures using synthetic data and fake credentials. Transport and subscription behavior is covered by the live smoke probes instead of duplicating SDK tests. No mailbox is accessed and no email is sent by the unit tests. Deployment and service notes are in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## License and lineage
 
