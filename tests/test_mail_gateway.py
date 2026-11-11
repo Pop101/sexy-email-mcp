@@ -13,9 +13,9 @@ from mcp.client import Client
 import mail_gateway as server
 
 ROWS = {
-    "primary": {"name": "primary", "address": "primary@example.test",
-              "password": "FAKE_TEST_PASSWORD", "send_as": ["support@example.test"]},
-    "secondary": {"name": "secondary", "address": "secondary@example.test",
+    "primary": {"name": "primary", "address": "primary@example.net",
+              "password": "FAKE_TEST_PASSWORD", "send_as": ["support@example.net"]},
+    "secondary": {"name": "secondary", "address": "secondary@example.net",
              "password": "FAKE_TEST_PASSWORD", "send_as": []},
 }
 
@@ -39,29 +39,29 @@ class GatewayTests(unittest.TestCase):
     def test_accounts_and_sender_authority_are_distinct_from_received_aliases(self):
         self.assertFalse(server.list_accounts()["setup_required"])
         draft = server.prepare_email("primary", ["customer@example.com"], "Test", "Body")
-        self.assertEqual(draft["from"], "primary@example.test")
+        self.assertEqual(draft["from"], "primary@example.net")
         allowed = server.prepare_email("primary", ["customer@example.com"], "Test", "Body",
-                                       sender="support@example.test")
-        self.assertEqual(allowed["from"], "support@example.test")
+                                       sender="support@example.net")
+        self.assertEqual(allowed["from"], "support@example.net")
         with self.assertRaises(Exception):
             server.prepare_email("primary", ["customer@example.com"], "Test", "Body",
-                                 sender="unverified-routing-alias@example.test")
+                                 sender="unverified-routing-alias@example.net")
 
     def test_routed_delivery_preserves_multiple_recipient_headers(self):
         message = email.message_from_string(
-            "From: customer@example.org\nTo: sales@example.test\n"
-            "Delivered-To: primary@example.test\nDelivered-To: sales@example.test\n"
-            "X-Original-To: alias@example.test\nX-Forwarded-To: support@example.test\n"
+            "From: customer@example.org\nTo: sales@example.net\n"
+            "Delivered-To: primary@example.net\nDelivered-To: sales@example.net\n"
+            "X-Original-To: alias@example.net\nX-Forwarded-To: support@example.net\n"
             "Subject: Routed\nMessage-ID: <origin@example.org>\n\nBody"
         )
         with patch.object(server, "_message", return_value=message):
             result = server.read_message("primary", "123")
             draft = server.prepare_reply("primary", "123", "Answer")
-        self.assertEqual(result["to"], ["sales@example.test"])
-        self.assertEqual(result["delivered_to"], ["primary@example.test", "sales@example.test"])
-        self.assertEqual(result["x_original_to"], ["alias@example.test"])
-        self.assertEqual(result["x_forwarded_to"], ["support@example.test"])
-        self.assertEqual(draft["from"], "primary@example.test")
+        self.assertEqual(result["to"], ["sales@example.net"])
+        self.assertEqual(result["delivered_to"], ["primary@example.net", "sales@example.net"])
+        self.assertEqual(result["x_original_to"], ["alias@example.net"])
+        self.assertEqual(result["x_forwarded_to"], ["support@example.net"])
+        self.assertEqual(draft["from"], "primary@example.net")
         self.assertEqual(draft["to"], ["customer@example.org"])
         self.assertEqual(draft["subject"], "Re: Routed")
         self.assertEqual(server.DRAFTS[draft["draft_id"]]["message"]["In-Reply-To"], "<origin@example.org>")
@@ -86,11 +86,11 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(first["status"], "sent")
         self.assertEqual(second["status"], "already_attempted")
         smtp.send_message.assert_called_once()
-        self.assertEqual(smtp.send_message.call_args.kwargs["from_addr"], "primary@example.test")
+        self.assertEqual(smtp.send_message.call_args.kwargs["from_addr"], "primary@example.net")
         conn.append.assert_called_once()
 
     def test_revoking_outgoing_alias_blocks_a_prepared_draft(self):
-        draft = server.prepare_email("primary", ["person@example.com"], "Hi", "Body", sender="support@example.test")
+        draft = server.prepare_email("primary", ["person@example.com"], "Hi", "Body", sender="support@example.net")
         with patch.object(server, "_config", return_value={"primary": {**ROWS["primary"], "send_as": []}, "secondary": ROWS["secondary"]}):
             with patch.object(server.smtplib, "SMTP_SSL") as smtp, self.assertRaises(Exception):
                 server.send_draft("primary", draft["draft_id"], approved=True)

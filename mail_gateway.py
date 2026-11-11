@@ -25,6 +25,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.subscriptions import InMemorySubscriptionBus, ResourceUpdated
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
+from pydantic import BaseModel, EmailStr, Field, TypeAdapter, ValidationError
 from starlette.responses import JSONResponse
 
 HOST = "mail.runbox.com"
@@ -53,24 +54,31 @@ class MailboxSubscriptionBus(InMemorySubscriptionBus):
 SUBSCRIPTIONS = MailboxSubscriptionBus()
 
 
+class AccountRecord(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+    address: EmailStr
+    password: str = Field(min_length=1)
+    send_as: list[EmailStr] = Field(default_factory=list)
+
+
+class AccountConfiguration(BaseModel):
+    accounts: list[AccountRecord] = Field(max_length=2)
+
+
+EMAIL = TypeAdapter(EmailStr)
+
+
 def _config():
     if not CONFIG.exists():
         return {}
     if CONFIG.stat().st_mode & 0o077:
         raise ValueError("Credential file must be private (chmod 600)")
-    rows = json.loads(CONFIG.read_text())["accounts"]
-    if not isinstance(rows, list) or len(rows) > 2:
-        raise ValueError("Invalid account configuration")
+    configuration = AccountConfiguration.model_validate_json(CONFIG.read_text())
     accounts = {}
-    for row in rows:
-        name, address = row["name"], row["address"]
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", name):
-            raise ValueError("Invalid account label")
-        if name in accounts or not address or not row.get("password"):
-            raise ValueError("Invalid account credentials")
-        if not isinstance(row.get("send_as", []), list):
-            raise ValueError("send_as must be a list of authorized outgoing aliases")
-        accounts[name] = row
+    for row in configuration.accounts:
+        if row.name in accounts:
+            raise ValueError("Account labels must be unique")
+        accounts[row.name] = row.model_dump()
     return accounts
 
 
@@ -121,9 +129,10 @@ def _quote(value):
 
 
 def _addr(value):
-    if not isinstance(value, str) or len(value) > 254 or not re.fullmatch(r"[^\s<>(),;:@]+@[^\s<>(),;:@]+\.[^\s<>(),;:@]+", value):
-        raise ValueError("Invalid email address")
-    return value
+    try:
+        return EMAIL.validate_python(value)
+    except ValidationError:
+        raise ValueError("Invalid email address") from None
 
 
 @contextlib.contextmanager
@@ -346,18 +355,7 @@ mcp = MCPServer("runbox-mail",
     lifespan=_mail_lifespan)
 
 
-def _tool(**options):
-    """Keep blocking provider I/O off the MCP event loop."""
-    def register(fn):
-        @wraps(fn)
-        async def run(*args, **kwargs):
-            return await asyncio.to_thread(fn, *args, **kwargs)
-        mcp.tool(**options)(run)
-        return fn
-    return register
-
-
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def list_accounts() -> dict:
     """List configured account labels and outgoing aliases; never reveals passwords."""
@@ -367,7 +365,7 @@ def list_accounts() -> dict:
             "setup_required": not ready}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def list_templates() -> dict:
     """List private template names and required variables without exposing their bodies."""
@@ -378,7 +376,7 @@ def list_templates() -> dict:
                           for name, row in _templates().items()]}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def list_signatures() -> dict:
     """List private signature names without exposing their contents."""
@@ -386,7 +384,7 @@ def list_signatures() -> dict:
     return {"signatures": sorted(rows), "default_configured": "default" in rows}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def check_mail(account: str = "all", limit: int = 5) -> dict:
     """Check unread counts and latest headers across configured inboxes."""
@@ -407,7 +405,7 @@ def check_mail(account: str = "all", limit: int = 5) -> dict:
     return {"mailboxes": result, "push_notifications_supported": False}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def list_folders(account: str) -> dict:
     """List raw IMAP folders, including folders containing spaces."""
@@ -418,7 +416,7 @@ def list_folders(account: str) -> dict:
         return {"account": account, "folders": [row.decode(errors="replace")[:1000] for row in rows or []]}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def search_messages(account: str, query: str = "ALL", folder: str = "INBOX", limit: int = 20) -> dict:
     """Search IMAP criteria (e.g. FROM, TO, TEXT, HEADER Delivered-To) without marking read. Alias routing supported."""
@@ -430,7 +428,7 @@ def search_messages(account: str, query: str = "ALL", folder: str = "INBOX", lim
                 "messages": _heads(conn, ids)}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def list_messages(account: str, folder: str = "INBOX", limit: int = 20) -> dict:
     """List recent headers without marking read; preserves the installed connector's tool name."""
@@ -447,7 +445,7 @@ def _attachment_parts(msg):
             and (part.get_filename() is not None or part.get_content_disposition() == "attachment")]
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def read_message(account: str, uid: str, folder: str = "INBOX") -> dict:
     """Read a message without marking read; includes all known alias-delivery headers and attachment metadata."""
@@ -461,7 +459,7 @@ def read_message(account: str, uid: str, folder: str = "INBOX") -> dict:
             "body": _body(msg), "attachments": attachments[:30], "content_is_untrusted": True}
 
 
-@_tool(annotations=READ)
+@mcp.tool(annotations=READ)
 @_safe
 def get_attachment(account: str, uid: str, index: int, folder: str = "INBOX") -> dict:
     """Retrieve up to 512 KB of an attachment in base64, without writing local files."""
@@ -546,7 +544,7 @@ def _draft(account, to, subject, body, cc=None, sender="", reply_to="", referenc
             "instruction": "Present this draft and send only after the user approves the exact content."}
 
 
-@_tool(annotations=PREPARE)
+@mcp.tool(annotations=PREPARE)
 @_safe
 def prepare_email(account: str, to: list[str], subject: str = "", body: str = "",
                   cc: list[str] | None = None, sender: str = "", attachments: list[dict] | None = None,
@@ -558,7 +556,7 @@ def prepare_email(account: str, to: list[str], subject: str = "", body: str = ""
     return draft
 
 
-@_tool(annotations=PREPARE)
+@mcp.tool(annotations=PREPARE)
 @_safe
 def prepare_reply(account: str, uid: str, body: str = "", folder: str = "INBOX",
                   reply_all: bool = False, sender: str = "", attachments: list[dict] | None = None,
@@ -590,7 +588,7 @@ def prepare_reply(account: str, uid: str, body: str = "", folder: str = "INBOX",
 
 
 if os.getenv("MAIL_ENABLE_SEND", "true").lower() not in {"0", "false"}:
-    @_tool(annotations=WRITE)
+    @mcp.tool(annotations=WRITE)
     @_safe
     def send_draft(account: str, draft_id: str, approved: bool = False) -> dict:
         """Send a previously reviewed draft only after explicit user approval (approved=true). An attempted draft cannot be sent again."""
@@ -648,18 +646,18 @@ if os.getenv("MAIL_ENABLE_SEND", "true").lower() not in {"0", "false"}:
 
 
 @mcp.resource("mail://inbox/{account}")
-def mail_inbox(account: str) -> str:
+def mail_inbox(account: str) -> dict:
     """Current inbox summary; subscribe to this URI for change notifications."""
-    return json.dumps(check_mail(account, limit=10))
+    return check_mail(account, limit=10)
 
 
 @mcp.resource("mail://status")
-def mail_status() -> str:
+def mail_status() -> dict:
     """Read-only resource for integration readiness."""
     try:
-        return json.dumps(list_accounts())
+        return list_accounts()
     except Exception:
-        return json.dumps({"setup_required": True})
+        return {"setup_required": True}
 
 
 @mcp.prompt()
@@ -671,48 +669,29 @@ def inbox_brief() -> str:
             "never send before explicit user approval.")
 
 
+@mcp.custom_route("/healthz", methods=["GET"])
+async def health(_request):
+    return JSONResponse({"status": "ok"})
+
+
 class Protected:
-    """Local token authentication and body limit; public OAuth remains in mcp-front."""
+    """Local token authentication; public OAuth remains in mcp-front."""
     def __init__(self, app, token):
         self.app, self.token = app, b"Bearer " + token.encode()
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] != "http" or (scope["path"] == "/healthz" and scope["method"] == "GET"):
             return await self.app(scope, receive, send)
-        if scope["path"] == "/healthz" and scope["method"] == "GET":
-            return await JSONResponse({"status": "ok"})(scope, receive, send)
         tokens = [value for key, value in scope["headers"] if key.lower() == b"authorization"]
         if len(tokens) != 1 or not hmac.compare_digest(tokens[0], self.token):
             return await JSONResponse({"error": "Unauthorized"}, 401,
                                       headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)
-        if scope["method"] != "POST":
-            return await self.app(scope, receive, send)
-        chunks, size = [], 0
-        while True:
-            packet = await receive()
-            if packet["type"] == "http.disconnect":
-                return
-            size += len(packet.get("body", b""))
-            if size > 4_000_000:
-                return await JSONResponse({"error": "Request exceeds 4 MB"}, 413)(scope, receive, send)
-            chunks.append(packet)
-            if not packet.get("more_body", False):
-                break
-        position = 0
-
-        async def replay():
-            nonlocal position
-            if position < len(chunks):
-                item = chunks[position]
-                position += 1
-                return item
-            return await receive()
-        return await self.app(scope, replay, send)
+        return await self.app(scope, receive, send)
 
 
 def main():
     import uvicorn
-    app = mcp.streamable_http_app(json_response=True, stateless_http=True,
+    app = mcp.streamable_http_app(json_response=True, stateless_http=True, max_request_body_size=4_000_000,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=["127.0.0.1:*", "localhost:*", *([PUBLIC_HOST] if PUBLIC_HOST else [])],

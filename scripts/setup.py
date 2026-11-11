@@ -10,9 +10,11 @@ import smtplib
 import sys
 import tempfile
 from pathlib import Path
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 ROOT = Path(__file__).resolve().parents[1] / ".secrets"
 FILE = ROOT / "accounts.json"
+EMAIL = TypeAdapter(EmailStr)
 
 
 def setup(replace=False):
@@ -35,8 +37,10 @@ def setup(replace=False):
             raise ValueError("Invalid account label")
         if name in {row["name"] for row in rows}:
             raise ValueError("Account labels must be unique")
-        if not re.fullmatch(r"[^\s<>(),;:@]+@[^\s<>(),;:@]+\.[^\s<>(),;:@]+", address):
-            raise ValueError("Invalid login address")
+        try:
+            EMAIL.validate_python(address)
+        except ValidationError:
+            raise ValueError("Invalid login address") from None
         password = getpass.getpass("Runbox app password: ")
         confirmation = getpass.getpass("Repeat password: ")
         if not password or password != confirmation:
