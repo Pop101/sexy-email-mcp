@@ -12,8 +12,9 @@ The running transport is Streamable HTTP on `127.0.0.1:3110/mcp`. Put it behind 
 - Routed-recipient headers and separately authorized outgoing aliases.
 - Incoming attachment metadata and base64 downloads up to 512 KB per attachment.
 - Outgoing base64 attachments on new drafts and replies, up to 10 files and 2 MB combined.
-- Private templates with simple `{variable}` placeholders.
-- Private signatures inserted at `{signature}`, or appended when the slot or template is absent.
+- Private plain-text or HTML templates with simple `{variable}` placeholders.
+- Private plain-text or HTML signatures inserted at `{signature}`, or appended when the slot or template is absent.
+- Multipart messages with readable plain-text alternatives and HTML-escaped template variables.
 - Standard MCP `subscriptions/listen` streams for mailbox change notifications.
 - Short-lived in-memory drafts that require explicit approval before sending.
 
@@ -65,6 +66,8 @@ Example signature configuration:
 }
 ```
 
+For rich email, replace a template body or signature string with a `{"text": "...", "html": "..."}` pair. Both representations use the same placeholders. HTML markup comes only from these trusted local files; supplied `body` and `template_vars` values are escaped and newlines become line breaks. Use inline styles and email-safe table layouts rather than style blocks or external assets. Messages with HTML include a plain-text alternative, and an HTML signature also works without a template.
+
 `prepare_email` and `prepare_reply` accept:
 
 - `template`: the private template name. Omit it to use the supplied body directly.
@@ -74,7 +77,7 @@ Example signature configuration:
 
 A template's `{signature}` slot is replaced exactly once. If that slot is missing, the selected signature is appended to the rendered body. Without a template, the signature is appended to the supplied body. If no default signature is configured, behavior remains unchanged.
 
-`list_templates` exposes template names, descriptions, subjects, and required variables. `list_signatures` exposes only signature names. Their private bodies are available to the renderer but are not returned by these discovery tools.
+`list_templates` exposes template names, descriptions, subjects, HTML availability, and required variables. `list_signatures` exposes only signature names. Their private bodies are available to the renderer but are not returned by these discovery tools.
 
 ## Attachments
 

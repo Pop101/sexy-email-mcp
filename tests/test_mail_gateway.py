@@ -113,6 +113,30 @@ class GatewayTests(unittest.TestCase):
         templates = {row["name"]: row for row in server.list_templates()["templates"]}
         self.assertEqual(templates["greeting"]["variables"], ["name"])
 
+    def test_html_templates_escape_variables_and_include_plain_text(self):
+        self.templates_file.write_text(json.dumps({"templates": {"styled": {
+            "subject": "Hello {name}",
+            "body": {"text": "Hi {name},\n\n{body}\n\n{signature}",
+                     "html": "<main><p>Hi {name},</p><p>{body}</p>{signature}</main>"},
+        }}}))
+        self.signatures_file.write_text(json.dumps({"signatures": {"default": {
+            "text": "Regards,\nExample Sender", "html": "<table><tr><td>Example Sender</td></tr></table>",
+        }}}))
+        self.templates_file.chmod(0o600)
+        self.signatures_file.chmod(0o600)
+
+        draft = server.prepare_email("primary", ["person@example.com"], body="One <two>\nThree",
+                                     template="styled", template_vars={"name": "Recipient & Co"})
+        direct = server.prepare_email("primary", ["person@example.com"], "Subject", "<b>Body</b>")
+
+        self.assertIn("Hi Recipient & Co,", draft["body"])
+        self.assertIn("Hi Recipient &amp; Co,", draft["html_body"])
+        self.assertIn("One &lt;two&gt;<br>\nThree", draft["html_body"])
+        self.assertEqual(draft["html_body"].count("Example Sender"), 1)
+        self.assertTrue(server.DRAFTS[draft["draft_id"]]["message"].is_multipart())
+        self.assertIn("&lt;b&gt;Body&lt;/b&gt;", direct["html_body"])
+        self.assertIn("<table><tr><td>Example Sender</td></tr></table>", direct["html_body"])
+
     def test_template_rejects_unconsumed_body_and_unknown_names(self):
         self.templates_file.write_text(json.dumps({"templates": {"fixed": {"body": "Fixed {signature}"}}}))
         self.templates_file.chmod(0o600)

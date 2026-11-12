@@ -3,6 +3,7 @@ import asyncio
 import base64
 import contextlib
 import email
+import html
 import hmac
 import imaplib
 import json
@@ -99,16 +100,26 @@ def _private_mapping(path, key):
     if not isinstance(rows, dict) or len(rows) > 100:
         raise ValueError(f"Invalid {key} configuration")
     for name in rows:
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", name):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name):
             raise ValueError(f"Invalid {key} name")
     return rows
+
+
+def _content_parts(value, limit):
+    if isinstance(value, str) and len(value) <= limit:
+        return value, ""
+    if (isinstance(value, dict) and set(value) == {"text", "html"}
+            and all(isinstance(part, str) and len(part) <= limit for part in value.values())):
+        return value["text"], value["html"]
+    raise ValueError(f"Content must be text or a text/html pair of at most {limit // 1000} KB each")
 
 
 def _templates():
     rows = _private_mapping(TEMPLATES, "templates")
     for row in rows.values():
-        if not isinstance(row, dict) or not isinstance(row.get("body"), str) or len(row["body"]) > 100_000:
-            raise ValueError("Each template needs a body of at most 100 KB")
+        if not isinstance(row, dict) or "body" not in row:
+            raise ValueError("Each template needs a body")
+        _content_parts(row["body"], 100_000)
         if not isinstance(row.get("subject", ""), str) or not isinstance(row.get("description", ""), str):
             raise ValueError("Template subject and description must be strings")
     return rows
@@ -117,8 +128,7 @@ def _templates():
 def _signatures():
     rows = _private_mapping(SIGNATURES, "signatures")
     for row in rows.values():
-        if not isinstance(row, str) or len(row) > 10_000:
-            raise ValueError("Signatures must be strings of at most 10 KB")
+        _content_parts(row, 10_000)
     return rows
 
 
@@ -275,6 +285,16 @@ def _append_signature(body, signature):
     return f"{body.rstrip()}\n\n{signature.strip()}" if body.strip() else signature.strip()
 
 
+def _html_text(value):
+    return html.escape(value, quote=True).replace("\n", "<br>\n")
+
+
+def _append_html_signature(body, signature):
+    if not signature:
+        return body
+    return f"{body.rstrip()}\n{signature.strip()}" if body.strip() else signature.strip()
+
+
 def _render_content(subject, body, template, signature, variables):
     if variables is None:
         variables = {}
@@ -283,28 +303,41 @@ def _render_content(subject, body, template, signature, variables):
         raise ValueError("template_vars must contain string keys and values")
     signatures = _signatures()
     if signature == "none":
-        selected_signature = ""
+        signature_text = signature_html = ""
     elif signature in signatures:
-        selected_signature = signatures[signature]
+        signature_text, signature_html = _content_parts(signatures[signature], 10_000)
     elif signature == "default":
-        selected_signature = ""
+        signature_text = signature_html = ""
     else:
         raise ValueError("Signature not found")
     if not template:
-        return subject, _append_signature(body, selected_signature)
+        rendered_body = _append_signature(body, signature_text)
+        rendered_html = ""
+        if signature_html:
+            rendered_html = _append_html_signature(_html_text(body), signature_html)
+        return subject, rendered_body, rendered_html
     templates = _templates()
     if template not in templates:
         raise ValueError("Template not found")
     record = templates[template]
-    fields = _template_fields(record["body"])
+    text_body, html_body = _content_parts(record["body"], 100_000)
+    fields = _template_fields(text_body) | _template_fields(html_body)
     if body and "body" not in fields:
         raise ValueError("Template has no {body} slot; leave body empty or use a template with that slot")
-    values = {**variables, "body": body, "signature": selected_signature}
+    values = {**variables, "body": body, "signature": signature_text}
     rendered_subject = subject or _render_template(record.get("subject", ""), values)
-    rendered_body = _render_template(record["body"], values)
-    if "signature" not in fields:
-        rendered_body = _append_signature(rendered_body, selected_signature)
-    return rendered_subject, rendered_body
+    rendered_body = _render_template(text_body, values)
+    if "signature" not in _template_fields(text_body):
+        rendered_body = _append_signature(rendered_body, signature_text)
+    rendered_html = ""
+    if html_body or signature_html:
+        html_values = {key: _html_text(value) for key, value in variables.items()}
+        html_values.update(body=_html_text(body), signature=signature_html or _html_text(signature_text))
+        html_source = html_body or _html_text(text_body)
+        rendered_html = _render_template(html_source, html_values)
+        if "signature" not in _template_fields(html_source):
+            rendered_html = _append_html_signature(rendered_html, signature_html or _html_text(signature_text))
+    return rendered_subject, rendered_body, rendered_html
 
 
 async def _poll_mailboxes(latest):
@@ -370,9 +403,10 @@ def list_accounts() -> dict:
 def list_templates() -> dict:
     """List private template names and required variables without exposing their bodies."""
     return {"templates": [{"name": name, "description": row.get("description", ""),
-                           "subject": row.get("subject", ""),
-                           "variables": sorted((_template_fields(row["body"]) | _template_fields(row.get("subject", "")))
-                                               - {"body", "signature"})}
+                           "subject": row.get("subject", ""), "html": bool(_content_parts(row["body"], 100_000)[1]),
+                           "variables": sorted((_template_fields(_content_parts(row["body"], 100_000)[0])
+                                                | _template_fields(_content_parts(row["body"], 100_000)[1])
+                                                | _template_fields(row.get("subject", ""))) - {"body", "signature"})}
                           for name, row in _templates().items()]}
 
 
@@ -507,11 +541,12 @@ def _outgoing_attachments(attachments):
     return decoded
 
 
-def _draft(account, to, subject, body, cc=None, sender="", reply_to="", references="", attachments=None):
+def _draft(account, to, subject, body, cc=None, sender="", reply_to="", references="", attachments=None, html_body=""):
     credentials = _account(account)
     to = [_addr(value) for value in to]
     cc = [_addr(value) for value in (cc or [])]
-    if not to or len(to) + len(cc) > 30 or not subject or len(subject) > 500 or any(c in subject for c in "\r\n") or len(body.encode()) > 100_000:
+    if (not to or len(to) + len(cc) > 30 or not subject or len(subject) > 500 or any(c in subject for c in "\r\n")
+            or len(body.encode()) > 100_000 or len(html_body.encode()) > 100_000):
         raise ValueError("Invalid recipients, subject or body length")
     allowed = [credentials["address"], *credentials.get("send_as", [])]
     selected = _addr(sender) if sender else credentials["address"]
@@ -525,6 +560,8 @@ def _draft(account, to, subject, body, cc=None, sender="", reply_to="", referenc
     if reply_to:
         msg["In-Reply-To"], msg["References"] = reply_to, references
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
     decoded_attachments = _outgoing_attachments(attachments)
     for filename, maintype, subtype, payload in decoded_attachments:
         msg.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
@@ -538,7 +575,7 @@ def _draft(account, to, subject, body, cc=None, sender="", reply_to="", referenc
         DRAFTS[ticket] = {"account": account, "login": credentials["address"], "message": msg, "expiry": time.monotonic() + 1800,
                           "attempted": False}
     return {"draft_id": ticket, "account": account, "from": selected, "to": to, "cc": cc,
-            "subject": subject, "body": body, "status": "prepared", "sent": False,
+            "subject": subject, "body": body, "html_body": html_body or None, "status": "prepared", "sent": False,
             "attachments": [{"filename": filename, "content_type": f"{maintype}/{subtype}", "size": len(payload)}
                             for filename, maintype, subtype, payload in decoded_attachments],
             "instruction": "Present this draft and send only after the user approves the exact content."}
@@ -550,8 +587,8 @@ def prepare_email(account: str, to: list[str], subject: str = "", body: str = ""
                   cc: list[str] | None = None, sender: str = "", attachments: list[dict] | None = None,
                   template: str = "", signature: str = "default", template_vars: dict[str, str] | None = None) -> dict:
     """Prepare an unsent message with optional attachments, a private template, and a private signature."""
-    subject, body = _render_content(subject, body, template, signature, template_vars)
-    draft = _draft(account, to, subject, body, cc, sender, attachments=attachments)
+    subject, body, html_body = _render_content(subject, body, template, signature, template_vars)
+    draft = _draft(account, to, subject, body, cc, sender, attachments=attachments, html_body=html_body)
     draft.update(template=template or None, signature=None if signature == "none" else signature)
     return draft
 
@@ -581,8 +618,8 @@ def prepare_reply(account: str, uid: str, body: str = "", folder: str = "INBOX",
         raise ValueError("Reply thread too long")
     subject = _decode(msg.get("Subject"))
     subject = subject if subject.lower().startswith("re:") else "Re: " + subject
-    subject, body = _render_content(subject, body, template, signature, template_vars)
-    draft = _draft(account, to, subject, body, cc, sender, parent[0], references, attachments)
+    subject, body, html_body = _render_content(subject, body, template, signature, template_vars)
+    draft = _draft(account, to, subject, body, cc, sender, parent[0], references, attachments, html_body)
     draft.update(template=template or None, signature=None if signature == "none" else signature)
     return draft
 
@@ -607,7 +644,7 @@ if os.getenv("MAIL_ENABLE_SEND", "true").lower() not in {"0", "false"}:
                 raise ValueError("Sender permission changed. Prepare a new draft")
             draft["attempted"] = True
             msg = draft["message"]
-        recipients = [addr for _, addr in getaddresses([msg["To"], msg.get("Cc", "")])]
+        recipients = [addr for _, addr in getaddresses([msg["To"], msg.get("Cc", "")]) if addr]
         sender = msg["From"]
         smtp = None
         try:
