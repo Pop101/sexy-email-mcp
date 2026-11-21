@@ -1,5 +1,28 @@
 # Runbox Mail MCP
 
+![sexy-email-mcp project banner](docs/readme-cover.svg)
+
+## Table of contents
+
+- [Why this fork](#why-this-fork)
+- [Technologies](#technologies)
+- [Features](#features)
+- [Setup](#setup)
+- [Private templates and signatures](#private-templates-and-signatures)
+- [Attachments](#attachments)
+- [Mailbox subscriptions](#mailbox-subscriptions)
+- [Main tools](#main-tools)
+- [Tests](#tests)
+- [License and lineage](#license-and-lineage)
+
+## Why this fork
+
+Forked from [mexican75/simple-email-mcp](https://github.com/mexican75/simple-email-mcp). This fork adapts the original mail MCP server for Runbox and adds attachments, private templates and signatures, and mailbox subscriptions.
+
+## Technologies
+
+[Python](https://www.python.org/) · [MCP](https://modelcontextprotocol.io/)
+
 A focused Model Context Protocol server for up to two Runbox IMAP/SMTP accounts. It provides inbox review, folder listing, search, message reading, attachments, reusable private templates and signatures, threaded drafts, and explicitly approved sending.
 
 The running transport is Streamable HTTP on `127.0.0.1:3110/mcp`. Put it behind your own authenticated HTTPS gateway; do not expose the backend directly.
